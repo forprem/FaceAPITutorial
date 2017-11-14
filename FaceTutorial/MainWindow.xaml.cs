@@ -10,6 +10,7 @@ using System.Windows.Media.Imaging;
 using Microsoft.ProjectOxford.Common.Contract;
 using Microsoft.ProjectOxford.Face;
 using Microsoft.ProjectOxford.Face.Contract;
+using System.Configuration;
 
 namespace FaceTutorial
 {
@@ -26,7 +27,7 @@ namespace FaceTutorial
         // NOTE: Free trial subscription keys are generated in the westcentralus region, so if you are using
         // a free trial subscription key, you should not need to change this region.
         private readonly IFaceServiceClient faceServiceClient =
-            new FaceServiceClient("{Put Key Here}", "{Put API Url Here}");
+            new FaceServiceClient(ConfigurationManager.AppSettings["subscriptionKey"], ConfigurationManager.AppSettings["apiUrl"]);
 
         Face[] faces;                   // The list of detected faces.
         String[] faceDescriptions;      // The list of descriptions for the detected faces.
@@ -248,7 +249,7 @@ namespace FaceTutorial
 
         private async void CreateGroupButton_Click(object sender, RoutedEventArgs e)
         {
-            var personGroupName = await CreatePersonGroup("drivers_group_1", "Drivers Group 1");
+            var personGroupName = await CreatePersonGroup(txtGroupName.Text.ToLower(), txtGroupName.Text);
 
             faceDescriptionStatusBar.Text = personGroupName;
         }
@@ -260,6 +261,128 @@ namespace FaceTutorial
             var personGroup = await faceServiceClient.GetPersonGroupAsync(personGroupId).ConfigureAwait(false);
 
             return personGroup.Name;
+        }
+
+        private async void TrainGroupButton_Click(object sender, RoutedEventArgs e)
+        {
+            await TrainPersonGroup();
+        }
+
+        private async Task TrainPersonGroup ()
+        {
+            await faceServiceClient.TrainPersonGroupAsync(txtGroupName.Text);
+        }
+
+        private async void AddPersonFaceButton_Click(object sender, RoutedEventArgs e)
+        {
+            var openDlg = new Microsoft.Win32.OpenFileDialog();
+
+            openDlg.Filter = "JPEG Image(*.jpg)|*.jpg";
+            bool? result = openDlg.ShowDialog(this);
+
+            // Return if canceled.
+            if (!(bool)result)
+            {
+                return;
+            }
+
+            // Display the image file.
+            string filePath = openDlg.FileName;
+
+            Uri fileUri = new Uri(filePath);
+            BitmapImage bitmapSource = new BitmapImage();
+
+            bitmapSource.BeginInit();
+            bitmapSource.CacheOption = BitmapCacheOption.None;
+            bitmapSource.UriSource = fileUri;
+            bitmapSource.EndInit();
+
+            FacePhoto.Source = bitmapSource;
+
+            // Detect any faces in the image.
+            Title = "Detecting...";
+            faces = await UploadAndDetectFaces(filePath);
+            Title = String.Format("Detection Finished. {0} face(s) detected", faces.Length);
+
+            if (faces.Length > 0)
+            {
+                // Prepare to draw rectangles around the faces.
+                DrawingVisual visual = new DrawingVisual();
+                DrawingContext drawingContext = visual.RenderOpen();
+                drawingContext.DrawImage(bitmapSource,
+                    new Rect(0, 0, bitmapSource.Width, bitmapSource.Height));
+                double dpi = bitmapSource.DpiX;
+                resizeFactor = 96 / dpi;
+                faceDescriptions = new String[faces.Length];
+
+                for (int i = 0; i < faces.Length; ++i)
+                {
+                    Face face = faces[i];
+
+                    // Draw a rectangle on the face.
+                    drawingContext.DrawRectangle(
+                        Brushes.Transparent,
+                        new Pen(Brushes.Red, 2),
+                        new Rect(
+                            face.FaceRectangle.Left * resizeFactor,
+                            face.FaceRectangle.Top * resizeFactor,
+                            face.FaceRectangle.Width * resizeFactor,
+                            face.FaceRectangle.Height * resizeFactor
+                            )
+                    );
+
+                    // Store the face description.
+                    faceDescriptions[i] = FaceDescription(face);
+                }
+
+                string addPersonResult = "No Persisted FaceId";
+
+                using (Stream imageFileStream = File.OpenRead(filePath))
+                {
+                    addPersonResult = await AddPersonFace(new Guid(txtPersonId.Text), imageFileStream);
+                }
+
+                drawingContext.Close();
+
+                // Display the image with the rectangle around the face.
+                RenderTargetBitmap faceWithRectBitmap = new RenderTargetBitmap(
+                    (int)(bitmapSource.PixelWidth * resizeFactor),
+                    (int)(bitmapSource.PixelHeight * resizeFactor),
+                    96,
+                    96,
+                    PixelFormats.Pbgra32);
+
+                faceWithRectBitmap.Render(visual);
+                FacePhoto.Source = faceWithRectBitmap;
+
+                // Set the status bar text.
+                faceDescriptionStatusBar.Text = "Person added. Id: " + addPersonResult;
+            }
+
+        }
+
+        private async Task<string> AddPersonFace(Guid personId, Stream imageStream)
+        {
+            var result = await faceServiceClient.AddPersonFaceAsync(txtGroupName.Text.ToLower(), personId, imageStream);
+
+            return result.PersistedFaceId.ToString();
+        }
+
+        private async void btnCreatePerson_Click(object sender, RoutedEventArgs e)
+        {
+            var result = await CreatePerson();
+
+            txtPersonId.Text = result;
+
+            //TODO: Add Null check
+            faceDescriptionStatusBar.Text = txtPesonName.Text + " was created with Id: " + result;
+        }
+
+        private async Task<string> CreatePerson()
+        {
+            var result = await faceServiceClient.CreatePersonAsync(txtGroupName.Text.ToLower(), txtPesonName.Text);
+
+            return result.PersonId.ToString();
         }
     }
 }
